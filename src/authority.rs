@@ -302,7 +302,7 @@ mod tests {
             expected_nonce: "nonce-1".into(),
             host_id: "urn:uuid:123e4567-e89b-42d3-a456-426614174000".into(),
         };
-        let session = authority.exchange_code(exchange, None).await.unwrap();
+        let mut session = authority.exchange_code(exchange, None).await.unwrap();
         assert!(session.plan_enabled());
         assert_eq!(session.subject(), "person-1");
         assert_eq!(
@@ -313,6 +313,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let store = ProtectedStore::open(&temp.path().join("credentials")).unwrap();
+            session.host_id = store.host_id().unwrap();
             store.save(&session).unwrap();
             let rotated = authority
                 .refresh_session(

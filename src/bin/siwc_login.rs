@@ -32,6 +32,20 @@ enum Account {
         #[arg(long)]
         subject: String,
     },
+    /// Import a disposable 0600 transfer file into this VM's broker store.
+    ImportVm {
+        #[arg(long)]
+        transfer_file: PathBuf,
+    },
+    /// Write a disposable 0600 transfer copy to a trusted 0700 directory.
+    ExportVm {
+        #[arg(long)]
+        client_id: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        transfer_dir: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -46,6 +60,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     account.client_id, account.subject, account.plan_enabled, account.expires_at
                 );
             }
+            return Ok(());
+        }
+        Account::ImportVm { transfer_file } => {
+            let authority = OpenAiAuthority::new()?;
+            let jwks = authority.fetch_jwks().await?;
+            let account = store.import_vm_transfer(&transfer_file, &jwks)?;
+            println!(
+                "Imported client {} for subject {}; plan={}",
+                account.client_id, account.subject, account.plan_enabled
+            );
+            return Ok(());
+        }
+        Account::ExportVm {
+            client_id,
+            subject,
+            transfer_dir,
+        } => {
+            let path = store.export_vm_transfer(&client_id, &subject, &transfer_dir)?;
+            println!("Transfer file: {}", path.display());
             return Ok(());
         }
         Account::New => LoginSession::start(&store).await?,
