@@ -4,6 +4,7 @@
 
 pub mod authority;
 pub mod identity;
+pub mod inference;
 #[cfg(unix)]
 pub mod login;
 pub mod oauth;
