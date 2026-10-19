@@ -4,4 +4,6 @@
 pub mod identity;
 pub mod oauth;
 pub mod policy;
+#[cfg(unix)]
+pub mod storage;
 pub mod tokens;

@@ -42,15 +42,15 @@ struct RawTokenResponse {
 /// Lives only in the trusted broker identity. Deliberately lacks Debug,
 /// Serialize, and Clone so ordinary logs cannot reveal the token set.
 pub struct ValidatedSession {
-    client_id: String,
-    subject: String,
-    host_id: String,
-    scopes: BTreeSet<String>,
-    expires_at: u64,
-    earliest_refresh_at: u64,
-    access_token: Zeroizing<String>,
-    refresh_token: Zeroizing<String>,
-    id_token: Zeroizing<String>,
+    pub(crate) client_id: String,
+    pub(crate) subject: String,
+    pub(crate) host_id: String,
+    pub(crate) scopes: BTreeSet<String>,
+    pub(crate) expires_at: u64,
+    pub(crate) earliest_refresh_at: u64,
+    pub(crate) access_token: Zeroizing<String>,
+    pub(crate) refresh_token: Zeroizing<String>,
+    pub(crate) id_token: Zeroizing<String>,
 }
 
 impl ValidatedSession {
@@ -75,7 +75,9 @@ impl ValidatedSession {
 
     /// Only trusted broker code may use this. Never send it to an agent.
     pub fn access_token_for_upstream(&self) -> Option<&str> {
-        self.plan_enabled().then_some(self.access_token.as_str())
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        (self.plan_enabled() && self.expires_at > now.saturating_add(30))
+            .then_some(self.access_token.as_str())
     }
 
     /// Use only for the documented token refresh, under a single refresh owner.
