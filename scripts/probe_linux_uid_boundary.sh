@@ -11,7 +11,15 @@ if [ -n "${SIWC_BUILD_DIR:-}" ]; then
   cleanup() { :; }
 else
   build_dir=$(mktemp -d)
-  cleanup() { rm -rf "$build_dir"; }
+  cleanup() {
+    # Build files belong to Docker's root UID on Linux CI. Remove only this
+    # generated mount from inside the same image, then remove its empty host
+    # directory. The explicit SIWC_BUILD_DIR escape hatch preserves a cache.
+    docker run --rm --network none \
+      --mount "type=bind,source=$build_dir,target=/out" \
+      "$fixture_image" find /out -mindepth 1 -delete
+    rmdir "$build_dir"
+  }
 fi
 trap cleanup EXIT INT TERM
 
