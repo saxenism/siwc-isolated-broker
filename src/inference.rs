@@ -105,7 +105,7 @@ impl PlanInference {
             }
             body.extend_from_slice(&chunk);
         }
-        if reflects_any_credential(&body, session) || !complete_sse(&body) {
+        if reflects_any_credential(&body, session) || !validated_complete_sse(&body) {
             return Err(InferenceError::InvalidResponse);
         }
         Ok(body)
@@ -137,7 +137,9 @@ fn reflects_any_credential(body: &[u8], session: &ValidatedSession) -> bool {
     false
 }
 
-fn complete_sse(bytes: &[u8]) -> bool {
+/// Validate one bounded Responses SSE body before a trusted caller releases it
+/// to a Codex client. It does not inspect upstream error bodies or credentials.
+pub fn validated_complete_sse(bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
     };
@@ -322,5 +324,19 @@ mod tests {
                 .unwrap_err(),
             InferenceError::InvalidResponse
         );
+    }
+
+    #[test]
+    fn completion_parser_rejects_late_failure_and_truncated_stream() {
+        assert!(validated_complete_sse(COMPLETE.as_bytes()));
+        assert!(!validated_complete_sse(
+            b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
+        ));
+        let late_failure =
+            format!("{COMPLETE}event: response.failed\ndata: {{\"type\":\"response.failed\"}}\n\n");
+        assert!(!validated_complete_sse(late_failure.as_bytes()));
+        assert!(!validated_complete_sse(
+            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        ));
     }
 }
