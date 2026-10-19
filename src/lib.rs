@@ -4,6 +4,8 @@
 
 pub mod authority;
 #[cfg(unix)]
+pub mod bridge;
+#[cfg(unix)]
 pub mod broker;
 pub mod grants;
 pub mod identity;
