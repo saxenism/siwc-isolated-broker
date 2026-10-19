@@ -4,7 +4,7 @@ A small Rust project for using [Sign in with ChatGPT plan sharing](https://devel
 
 ## Status
 
-**Protocol core only; do not use with real credentials yet.** This first milestone builds and tests a browser authorization URL, validates a bound callback, prepares the documented code-exchange form, and rejects Responses requests outside the selected plan route. It does not perform token exchange, validate ID-token signatures, persist or refresh credentials, serve a socket, enforce lane grants, or forward inference. No real-token path is enabled in this repository.
+**Protocol core only; do not use with real credentials yet.** This first milestone builds and tests a browser authorization URL, validates a bound callback, prepares the documented code-exchange form, verifies a signed ID token against supplied trusted JWKS, and rejects Responses requests outside the selected plan route. It does not perform token exchange, fetch and rotate issuer JWKS, persist or refresh credentials, serve a socket, enforce lane grants, or forward inference. No real-token path is enabled in this repository.
 
 The private campaign controller, its approval state, target source, research traces, and reports are not part of this repository.
 
@@ -22,7 +22,7 @@ The broker must verify a short-lived lane grant, exact model and route, lease an
 
 ## Next gates before a live login
 
-1. Implement local browser sign-in with a bound loopback listener, code exchange, signed ID-token validation against OpenAI JWKS, and a check for the `chatgpt.tokens.use.direct` scope.
+1. Implement local browser sign-in with a bound loopback listener, code exchange, trusted issuer JWKS retrieval/rotation, and a check for the `chatgpt.tokens.use.direct` scope. The signed ID-token verifier already exists as an offline primitive.
 2. Store tokens atomically with owner-only permissions under the broker OS identity; serialize refresh-token rotation and make restart recovery explicit.
 3. Serve a Unix socket with peer authentication and controller-signed, revocable lane grants. Permit only `POST /v1/responses` for one approved model and its documented request shape.
 4. Validate upstream streaming completion and quarantine credential reflections without leaking response bodies, while measuring memory and latency. Keep agent, broker, and target-build process and mount namespaces separate.

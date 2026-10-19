@@ -24,13 +24,12 @@ const UNSUPPORTED: &[&str] = &[
     "service_tier",
 ];
 
-const HOSTED_TOOLS: &[&str] = &[
-    "image_generation",
-    "file_search",
-    "code_interpreter",
-    "computer_use",
-    "mcp",
-    "tool_search",
+const ALLOWED_TOOLS: &[&str] = &[
+    "function",
+    "custom",
+    "namespace",
+    "web_search",
+    "web_search_preview",
 ];
 
 pub fn valid_plan_request(value: &Value, allowed_model: &str) -> bool {
@@ -46,7 +45,7 @@ pub fn valid_plan_request(value: &Value, allowed_model: &str) -> bool {
             .is_some_and(|input| {
                 !input.is_empty()
                     && input.iter().all(|item| {
-                        item.as_object().is_none_or(|part| {
+                        item.as_object().is_some_and(|part| {
                             part.get("role").and_then(Value::as_str) != Some("system")
                         })
                     })
@@ -54,17 +53,16 @@ pub fn valid_plan_request(value: &Value, allowed_model: &str) -> bool {
         && UNSUPPORTED
             .iter()
             .all(|field| !request.contains_key(*field))
-        && request
-            .get("tools")
-            .and_then(Value::as_array)
-            .is_none_or(|tools| {
+        && request.get("tools").and_then(Value::as_array).map_or(
+            !request.contains_key("tools"),
+            |tools| {
                 tools.iter().all(|tool| {
-                    !tool
-                        .get("type")
+                    tool.get("type")
                         .and_then(Value::as_str)
-                        .is_some_and(|kind| HOSTED_TOOLS.contains(&kind))
+                        .is_some_and(|kind| ALLOWED_TOOLS.contains(&kind))
                 })
-            })
+            },
+        )
 }
 
 #[cfg(test)]
@@ -97,5 +95,8 @@ mod tests {
         let mut bad = good.clone();
         bad["tools"] = json!([{"type":"tool_search"}]);
         assert!(!valid_plan_request(&bad, "example-model"));
+        let mut good_with_tools = good.clone();
+        good_with_tools["tools"] = json!([{"type":"namespace","name":"local"}]);
+        assert!(valid_plan_request(&good_with_tools, "example-model"));
     }
 }

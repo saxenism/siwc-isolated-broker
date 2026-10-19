@@ -40,6 +40,7 @@ pub struct AuthorizationAttempt {
     authorization_url: Url,
     callback: Url,
     state: String,
+    nonce: String,
     pkce_verifier: String,
     existing_client_id: Option<String>,
 }
@@ -51,6 +52,7 @@ pub struct CodeExchange {
     pub code: String,
     pub code_verifier: String,
     pub redirect_uri: String,
+    pub expected_nonce: String,
 }
 
 impl CodeExchange {
@@ -141,6 +143,7 @@ impl AuthorizationAttempt {
             authorization_url,
             callback,
             state,
+            nonce,
             pkce_verifier,
             existing_client_id,
         })
@@ -204,6 +207,7 @@ impl AuthorizationAttempt {
             code,
             code_verifier: self.pkce_verifier,
             redirect_uri: self.callback.to_string(),
+            expected_nonce: self.nonce,
         })
     }
 }
