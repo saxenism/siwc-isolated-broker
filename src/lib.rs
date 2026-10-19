@@ -3,6 +3,7 @@
 //! and has not been tested against a live account or authority.
 
 pub mod authority;
+pub mod grants;
 pub mod identity;
 pub mod inference;
 #[cfg(unix)]

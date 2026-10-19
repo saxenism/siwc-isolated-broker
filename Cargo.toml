@@ -19,6 +19,7 @@ required-features = ["experimental-login"]
 axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"], optional = true }
+ed25519-dalek = "3.0.0"
 getrandom = "0.3"
 hex = "0.4.3"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
