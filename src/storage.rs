@@ -31,6 +31,8 @@ pub enum StoreError {
     Locked,
     #[error("credential record is invalid or bound to another account or host")]
     InvalidRecord,
+    #[error("refresh outcome is uncertain; reauthorization is required before automatic retry")]
+    UncertainRefresh,
     #[error("credential store I/O failed")]
     Io(#[source] std::io::Error),
 }
@@ -66,6 +68,7 @@ struct RecordOwned {
 pub struct ProtectedStore {
     dir: PathBuf,
     _lock: File,
+    refresh_gate: tokio::sync::Mutex<()>,
 }
 
 fn owner_only(metadata: &fs::Metadata, expected_mode: u32) -> bool {
@@ -76,6 +79,11 @@ fn owner_only(metadata: &fs::Metadata, expected_mode: u32) -> bool {
 fn record_path(dir: &Path, client_id: &str) -> PathBuf {
     let digest = Sha256::digest(client_id.as_bytes());
     dir.join(format!("account-{}.json", hex::encode(digest)))
+}
+
+fn marker_path(dir: &Path, client_id: &str) -> PathBuf {
+    let digest = Sha256::digest(client_id.as_bytes());
+    dir.join(format!(".refresh-{}", hex::encode(digest)))
 }
 
 impl ProtectedStore {
@@ -116,6 +124,7 @@ impl ProtectedStore {
         let store = Self {
             dir: dir.to_owned(),
             _lock: lock,
+            refresh_gate: tokio::sync::Mutex::new(()),
         };
         store.cleanup_orphan_temps()?;
         Ok(store)
@@ -134,6 +143,77 @@ impl ProtectedStore {
             fs::remove_file(entry.path()).map_err(StoreError::Io)?;
         }
         Ok(())
+    }
+
+    fn sync_dir(&self) -> Result<(), StoreError> {
+        File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(StoreError::Io)
+    }
+
+    pub(crate) async fn lock_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.refresh_gate.lock().await
+    }
+
+    /// A durable hash marker prevents replaying a refresh token after a crash
+    /// or an uncertain network response. If the saved token changed, the
+    /// previous rotation committed and its old marker can be replaced.
+    pub(crate) fn begin_refresh(&self, session: &ValidatedSession) -> Result<(), StoreError> {
+        let marker = marker_path(&self.dir, &session.client_id);
+        let hash = hex::encode(Sha256::digest(session.refresh_token.as_bytes()));
+        match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&marker)
+        {
+            Ok(mut file) => {
+                let metadata = file.metadata().map_err(StoreError::Io)?;
+                if !metadata.file_type().is_file()
+                    || !owner_only(&metadata, 0o600)
+                    || metadata.len() > 64
+                {
+                    return Err(StoreError::UnsafePath);
+                }
+                let mut previous_hash = String::new();
+                file.read_to_string(&mut previous_hash)
+                    .map_err(StoreError::Io)?;
+                if previous_hash.len() != 64
+                    || !previous_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(StoreError::UncertainRefresh);
+                }
+                if previous_hash == hash {
+                    return Err(StoreError::UncertainRefresh);
+                }
+                fs::remove_file(&marker).map_err(StoreError::Io)?;
+                self.sync_dir()?;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(StoreError::Io(error)),
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&marker)
+            .map_err(StoreError::Io)?;
+        file.write_all(hash.as_bytes()).map_err(StoreError::Io)?;
+        file.sync_all().map_err(StoreError::Io)?;
+        self.sync_dir()?;
+        Ok(())
+    }
+
+    pub(crate) fn commit_refresh(&self, session: &ValidatedSession) -> Result<(), StoreError> {
+        let marker = marker_path(&self.dir, &session.client_id);
+        let metadata = fs::symlink_metadata(&marker).map_err(|_| StoreError::UncertainRefresh)?;
+        if !metadata.file_type().is_file() || !owner_only(&metadata, 0o600) || metadata.len() != 64
+        {
+            return Err(StoreError::UncertainRefresh);
+        }
+        self.save(session)?;
+        fs::remove_file(marker).map_err(StoreError::Io)?;
+        self.sync_dir()
     }
 
     /// A successful rename and directory fsync make a refresh-token rotation
@@ -178,9 +258,7 @@ impl ProtectedStore {
         temp.as_file().sync_all().map_err(StoreError::Io)?;
         temp.persist(&path)
             .map_err(|error| StoreError::Io(error.error))?;
-        File::open(&self.dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(StoreError::Io)?;
+        self.sync_dir()?;
         Ok(())
     }
 
@@ -358,5 +436,41 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn uncertain_refresh_cannot_replay_rotated_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("private");
+        let store = ProtectedStore::open(&dir).unwrap();
+        let old = fixture();
+        store.save(&old).unwrap();
+        store.begin_refresh(&old).unwrap();
+        drop(store);
+        let reopened = ProtectedStore::open(&dir).unwrap();
+        let loaded = reopened
+            .load(&old.client_id, &old.host_id, &old.subject)
+            .unwrap();
+        assert!(matches!(
+            reopened.begin_refresh(&loaded),
+            Err(StoreError::UncertainRefresh)
+        ));
+        let mut rotated = fixture();
+        rotated.refresh_token = Zeroizing::new("replacement-refresh".into());
+        reopened.save(&rotated).unwrap();
+        reopened.begin_refresh(&rotated).unwrap();
+        reopened.commit_refresh(&rotated).unwrap();
+        assert!(!marker_path(&dir, &old.client_id).exists());
+        let marker = marker_path(&dir, &old.client_id);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&marker)
+            .unwrap();
+        assert!(matches!(
+            reopened.begin_refresh(&rotated),
+            Err(StoreError::UncertainRefresh)
+        ));
     }
 }

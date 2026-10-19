@@ -11,7 +11,10 @@ use serde::Deserialize;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::{identity::verify_id_token, oauth::CodeExchange};
+use crate::{
+    identity::{verify_id_token, verify_refresh_id_token},
+    oauth::CodeExchange,
+};
 
 const MAX_TOKEN_RESPONSE: usize = 64 * 1024;
 const REQUIRED_SCOPES: &[&str] = &["offline_access", "resource.invoke"];
@@ -159,6 +162,63 @@ pub fn accept_initial_token_response(
     })
 }
 
+/// Accept a rotating refresh response only if its newly signed identity is
+/// still the same account and client. The caller must durably save the entire
+/// returned set before issuing any new upstream request.
+pub fn accept_refresh_token_response(
+    body: &[u8],
+    previous: &ValidatedSession,
+    jwks: &JwkSet,
+) -> Result<ValidatedSession, TokenError> {
+    if body.len() > MAX_TOKEN_RESPONSE {
+        return Err(TokenError::InvalidResponse);
+    }
+    let raw: RawTokenResponse =
+        serde_json::from_slice(body).map_err(|_| TokenError::InvalidResponse)?;
+    if raw.access_token.is_empty()
+        || raw.refresh_token.is_empty()
+        || raw.id_token.is_empty()
+        || raw.token_type != "Bearer"
+        || !(60..=86_400).contains(&raw.expires_in)
+    {
+        return Err(TokenError::InvalidResponse);
+    }
+    let scopes: BTreeSet<String> = raw
+        .scope
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if !REQUIRED_SCOPES.iter().all(|scope| scopes.contains(*scope)) {
+        return Err(TokenError::InvalidResponse);
+    }
+    let identity = verify_refresh_id_token(&raw.id_token, jwks, &previous.client_id)
+        .map_err(|_| TokenError::InvalidIdentity)?;
+    if identity.subject != previous.subject {
+        return Err(TokenError::WrongAccount);
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| TokenError::Clock)?
+        .as_secs();
+    let expires_at = now
+        .checked_add(raw.expires_in)
+        .ok_or(TokenError::InvalidResponse)?;
+    if raw.earliest_refresh_at > expires_at.saturating_add(5) {
+        return Err(TokenError::InvalidResponse);
+    }
+    Ok(ValidatedSession {
+        client_id: previous.client_id.clone(),
+        subject: previous.subject.clone(),
+        host_id: previous.host_id.clone(),
+        scopes,
+        expires_at,
+        earliest_refresh_at: raw.earliest_refresh_at,
+        access_token: Zeroizing::new(raw.access_token),
+        refresh_token: Zeroizing::new(raw.refresh_token),
+        id_token: Zeroizing::new(raw.id_token),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +310,40 @@ mod tests {
                 None
             ),
             Err(TokenError::InvalidIdentity)
+        ));
+
+        let refresh_id_token = encode(
+            &header,
+            &json!({
+                "sub":"person-1", "iss":"https://auth.openai.com", "aud":"oaiapp-fixture",
+                "iat":now, "exp":now+3600
+            }),
+            &encoding,
+        )
+        .unwrap();
+        response["id_token"] = json!(refresh_id_token);
+        response["refresh_token"] = json!("replacement-refresh");
+        let rotated =
+            accept_refresh_token_response(&serde_json::to_vec(&response).unwrap(), &enabled, &jwks)
+                .unwrap();
+        assert_eq!(
+            rotated.refresh_form()[2],
+            ("refresh_token", "replacement-refresh")
+        );
+        response["id_token"] = json!(
+            encode(
+                &header,
+                &json!({
+                    "sub":"person-2", "iss":"https://auth.openai.com", "aud":"oaiapp-fixture",
+                    "iat":now, "exp":now+3600
+                }),
+                &encoding
+            )
+            .unwrap()
+        );
+        assert!(matches!(
+            accept_refresh_token_response(&serde_json::to_vec(&response).unwrap(), &enabled, &jwks),
+            Err(TokenError::WrongAccount)
         ));
     }
 }

@@ -27,7 +27,7 @@ pub enum IdentityError {
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
-    nonce: String,
+    nonce: Option<String>,
     iat: u64,
     exp: u64,
     iss: String,
@@ -48,7 +48,27 @@ pub fn verify_id_token(
     expected_client_id: &str,
     expected_nonce: &str,
 ) -> Result<VerifiedIdentity, IdentityError> {
-    if expected_client_id.is_empty() || expected_nonce.is_empty() || token.len() > 32_768 {
+    if expected_nonce.is_empty() {
+        return Err(IdentityError::InvalidToken);
+    }
+    verify_inner(token, jwks, expected_client_id, Some(expected_nonce))
+}
+
+pub(crate) fn verify_refresh_id_token(
+    token: &str,
+    jwks: &JwkSet,
+    expected_client_id: &str,
+) -> Result<VerifiedIdentity, IdentityError> {
+    verify_inner(token, jwks, expected_client_id, None)
+}
+
+fn verify_inner(
+    token: &str,
+    jwks: &JwkSet,
+    expected_client_id: &str,
+    expected_nonce: Option<&str>,
+) -> Result<VerifiedIdentity, IdentityError> {
+    if expected_client_id.is_empty() || token.len() > 32_768 {
         return Err(IdentityError::InvalidToken);
     }
     let header = decode_header(token).map_err(|_| IdentityError::InvalidToken)?;
@@ -90,12 +110,12 @@ pub fn verify_id_token(
         || !valid_audience
         || claims.iat > now.saturating_add(5)
         || claims.exp <= claims.iat
-        || claims
-            .nonce
-            .as_bytes()
-            .ct_eq(expected_nonce.as_bytes())
-            .unwrap_u8()
-            != 1
+        || expected_nonce.is_some_and(|nonce| {
+            claims
+                .nonce
+                .as_deref()
+                .is_none_or(|actual| actual.as_bytes().ct_eq(nonce.as_bytes()).unwrap_u8() != 1)
+        })
     {
         return Err(IdentityError::InvalidToken);
     }

@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use url::Url;
+use zeroize::Zeroize;
 
 const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
 const RESOURCE: &str = "https://api.openai.com/v1";
@@ -46,6 +47,14 @@ pub struct AuthorizationAttempt {
     host_id: String,
 }
 
+impl Drop for AuthorizationAttempt {
+    fn drop(&mut self) {
+        self.state.zeroize();
+        self.nonce.zeroize();
+        self.pkce_verifier.zeroize();
+    }
+}
+
 /// A validated callback still needs code exchange and signed ID-token validation.
 /// Intentionally does not implement Debug or Clone.
 pub struct CodeExchange {
@@ -55,6 +64,14 @@ pub struct CodeExchange {
     pub redirect_uri: String,
     pub expected_nonce: String,
     pub host_id: String,
+}
+
+impl Drop for CodeExchange {
+    fn drop(&mut self) {
+        self.code.zeroize();
+        self.code_verifier.zeroize();
+        self.expected_nonce.zeroize();
+    }
 }
 
 impl CodeExchange {
@@ -156,7 +173,7 @@ impl AuthorizationAttempt {
         &self.authorization_url
     }
 
-    pub fn finish(self, callback: &Url) -> Result<CodeExchange, AuthError> {
+    pub fn finish(mut self, callback: &Url) -> Result<CodeExchange, AuthError> {
         let mut expected = self.callback.clone();
         expected.set_query(callback.query());
         if callback != &expected {
@@ -191,7 +208,7 @@ impl AuthorizationAttempt {
         let code = code
             .filter(|code| !code.is_empty())
             .ok_or(AuthError::InvalidCallback)?;
-        let client_id = match self.existing_client_id {
+        let client_id = match self.existing_client_id.take() {
             Some(expected) => {
                 if returned_client_id
                     .as_deref()
@@ -208,10 +225,10 @@ impl AuthorizationAttempt {
         Ok(CodeExchange {
             client_id,
             code,
-            code_verifier: self.pkce_verifier,
+            code_verifier: std::mem::take(&mut self.pkce_verifier),
             redirect_uri: self.callback.to_string(),
-            expected_nonce: self.nonce,
-            host_id: self.host_id,
+            expected_nonce: std::mem::take(&mut self.nonce),
+            host_id: std::mem::take(&mut self.host_id),
         })
     }
 }
