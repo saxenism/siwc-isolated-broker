@@ -904,6 +904,7 @@ dependencies = [
  "thiserror",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

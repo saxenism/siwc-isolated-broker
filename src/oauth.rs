@@ -43,6 +43,7 @@ pub struct AuthorizationAttempt {
     nonce: String,
     pkce_verifier: String,
     existing_client_id: Option<String>,
+    host_id: String,
 }
 
 /// A validated callback still needs code exchange and signed ID-token validation.
@@ -53,6 +54,7 @@ pub struct CodeExchange {
     pub code_verifier: String,
     pub redirect_uri: String,
     pub expected_nonce: String,
+    pub host_id: String,
 }
 
 impl CodeExchange {
@@ -146,6 +148,7 @@ impl AuthorizationAttempt {
             nonce,
             pkce_verifier,
             existing_client_id,
+            host_id: host_id.to_owned(),
         })
     }
 
@@ -208,6 +211,7 @@ impl AuthorizationAttempt {
             code_verifier: self.pkce_verifier,
             redirect_uri: self.callback.to_string(),
             expected_nonce: self.nonce,
+            host_id: self.host_id,
         })
     }
 }

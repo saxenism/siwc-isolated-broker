@@ -4,7 +4,7 @@ A small Rust project for using [Sign in with ChatGPT plan sharing](https://devel
 
 ## Status
 
-**Protocol core only; do not use with real credentials yet.** This first milestone builds and tests a browser authorization URL, validates a bound callback, prepares the documented code-exchange form, verifies a signed ID token against supplied trusted JWKS, and rejects Responses requests outside the selected plan route. It does not perform token exchange, fetch and rotate issuer JWKS, persist or refresh credentials, serve a socket, enforce lane grants, or forward inference. No real-token path is enabled in this repository.
+**Protocol core only; do not use with real credentials yet.** This first milestone builds and tests a browser authorization URL, validates a bound callback, prepares the documented code-exchange form, verifies a signed ID token against supplied trusted JWKS, checks the returned plan permission and account binding, and rejects Responses requests outside the selected plan route. It does not perform token exchange, fetch and rotate issuer JWKS, persist or refresh credentials, serve a socket, enforce lane grants, or forward inference. No real-token path is enabled in this repository.
 
 The private campaign controller, its approval state, target source, research traces, and reports are not part of this repository.
 
