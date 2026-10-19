@@ -4,7 +4,7 @@ A small Rust project for using [Sign in with ChatGPT plan sharing](https://devel
 
 ## Status
 
-**Protocol core only; do not use with real credentials yet.** This milestone builds and tests a browser authorization URL, validates a bound callback, performs a fixed-endpoint token exchange, fetches issuer JWKS, verifies the signed ID token, checks plan permission and account binding, and rejects Responses requests outside the selected plan route. A Unix-only, owner-only store atomically saves validated token records and holds an exclusive broker process lock. Refresh rotation uses an in-process gate and a durable uncertain-outcome marker. Sign-in and refresh transports have been exercised only against a fake authority. There is no browser callback listener, serving socket, lane grant enforcement, or inference forwarding. No runnable live-login flow is enabled in this repository.
+**Protocol core only; do not use with real credentials yet.** This milestone builds and tests a browser authorization URL and a bound loopback callback listener, performs a fixed-endpoint token exchange, fetches issuer JWKS, verifies the signed ID token, checks plan permission and account binding, and rejects Responses requests outside the selected plan route. A Unix-only, owner-only store atomically saves validated token records and holds an exclusive broker process lock. Refresh rotation uses an in-process gate and a durable uncertain-outcome marker. Sign-in and refresh transports have been exercised only against a fake authority. There is no runnable login UI, serving socket, lane grant enforcement, or inference forwarding.
 
 The private campaign controller, its approval state, target source, research traces, and reports are not part of this repository.
 
@@ -22,7 +22,7 @@ The broker must verify a short-lived lane grant, exact model and route, lease an
 
 ## Next gates before a live login
 
-1. Implement local browser sign-in with a bound loopback listener, trusted issuer discovery and JWKS rotation, and the account picker. The fixed token/JWKS transport and signed ID-token verifier exist but have only fake-authority coverage.
+1. Complete the local browser sign-in UI and returning-account picker, and validate trusted issuer JWKS rotation. The bound loopback listener, fixed token/JWKS transport, and signed ID-token verifier exist but have only fake-authority coverage.
 2. Verify refresh and restart behavior against an eligible real account under a dedicated broker OS identity. The owner-only atomic store, single refresh owner, and uncertain-outcome marker are tested with synthetic records.
 3. Serve a Unix socket with peer authentication and controller-signed, revocable lane grants. Permit only `POST /v1/responses` for one approved model and its documented request shape.
 4. Validate upstream streaming completion and quarantine credential reflections without leaking response bodies, while measuring memory and latency. Keep agent, broker, and target-build process and mount namespaces separate.

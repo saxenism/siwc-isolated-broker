@@ -151,6 +151,48 @@ impl ProtectedStore {
             .map_err(StoreError::Io)
     }
 
+    /// Each broker host keeps one stable, opaque identifier across restarts.
+    /// It is not a credential and must never be copied from a laptop to a VM.
+    pub fn host_id(&self) -> Result<String, StoreError> {
+        let path = self.dir.join("host-id");
+        let mut file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let value = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&path)
+                    .map_err(StoreError::Io)?;
+                file.write_all(value.as_bytes()).map_err(StoreError::Io)?;
+                file.sync_all().map_err(StoreError::Io)?;
+                self.sync_dir()?;
+                return Ok(value);
+            }
+            Err(error) => return Err(StoreError::Io(error)),
+        };
+        let metadata = file.metadata().map_err(StoreError::Io)?;
+        if !metadata.file_type().is_file() || !owner_only(&metadata, 0o600) || metadata.len() > 64 {
+            return Err(StoreError::UnsafePath);
+        }
+        let mut value = String::new();
+        file.read_to_string(&mut value).map_err(StoreError::Io)?;
+        let valid = value
+            .strip_prefix("urn:uuid:")
+            .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+            .is_some_and(|id| id.get_version_num() == 4);
+        if !valid {
+            return Err(StoreError::InvalidRecord);
+        }
+        Ok(value)
+    }
+
     pub(crate) async fn lock_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.refresh_gate.lock().await
     }
@@ -350,6 +392,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("private");
         let store = ProtectedStore::open(&dir).unwrap();
+        let host_id = store.host_id().unwrap();
+        assert_eq!(host_id, store.host_id().unwrap());
         assert!(matches!(
             ProtectedStore::open(&dir),
             Err(StoreError::Locked)
@@ -382,7 +426,8 @@ mod tests {
             0o600
         );
         drop(store);
-        assert!(ProtectedStore::open(&dir).is_ok());
+        let reopened = ProtectedStore::open(&dir).unwrap();
+        assert_eq!(host_id, reopened.host_id().unwrap());
     }
 
     #[test]

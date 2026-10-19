@@ -1,0 +1,194 @@
+//! Loopback browser callback for a broker process running under its own OS
+//! identity. The listener binds only 127.0.0.1 and holds one pending attempt.
+
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use axum::{
+    Router,
+    extract::{OriginalUri, State},
+    response::Html,
+    routing::get,
+};
+use thiserror::Error;
+use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::timeout};
+use url::Url;
+
+use crate::{
+    authority::{AuthorityError, OpenAiAuthority},
+    oauth::{AuthError, AuthorizationAttempt, CodeExchange, Registration},
+    storage::{ProtectedStore, StoreError},
+};
+
+const APP_NAME: &str = "SIWC Isolated Broker";
+const CALLBACK_WAIT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Error)]
+pub enum LoginError {
+    #[error("loopback callback listener failed")]
+    Listener,
+    #[error("browser callback did not arrive in time")]
+    Timeout,
+    #[error("authorization failed: {0}")]
+    Authorization(#[from] AuthError),
+    #[error("OpenAI authority failed: {0}")]
+    Authority(#[from] AuthorityError),
+    #[error("protected credential store failed: {0}")]
+    Store(#[from] StoreError),
+    #[error("broker host identity changed during sign-in")]
+    HostChanged,
+}
+
+#[derive(Clone)]
+struct CallbackState {
+    port: u16,
+    sender: Arc<Mutex<Option<oneshot::Sender<Url>>>>,
+}
+
+async fn callback(
+    State(state): State<CallbackState>,
+    OriginalUri(uri): OriginalUri,
+) -> Html<&'static str> {
+    let mut url = Url::parse(&format!("http://127.0.0.1:{}/auth/callback", state.port))
+        .expect("bound loopback callback URL");
+    url.set_query(uri.query());
+    if let Ok(mut sender) = state.sender.lock()
+        && let Some(sender) = sender.take()
+    {
+        let _ = sender.send(url);
+    }
+    Html(
+        "<!doctype html><meta charset=utf-8><title>Callback received</title><script>history.replaceState(null,'','/auth/complete')</script>Callback received. Return to the broker to see the result.",
+    )
+}
+
+/// A one-time browser attempt. It does not implement Debug or Clone because
+/// the authorization URL contains state and nonce values.
+pub struct LoginSession {
+    attempt: Option<AuthorizationAttempt>,
+    receiver: Option<oneshot::Receiver<Url>>,
+    server: JoinHandle<()>,
+}
+
+pub struct LoginOutcome {
+    pub client_id: String,
+    pub subject: String,
+    pub plan_enabled: bool,
+}
+
+impl Drop for LoginSession {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+impl LoginSession {
+    pub async fn start(store: &ProtectedStore) -> Result<Self, LoginError> {
+        let host_id = store.host_id()?;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|_| LoginError::Listener)?;
+        let port = listener
+            .local_addr()
+            .map_err(|_| LoginError::Listener)?
+            .port();
+        let callback_uri = Url::parse(&format!("http://127.0.0.1:{port}/auth/callback"))
+            .expect("bound loopback callback URL");
+        let attempt = AuthorizationAttempt::begin(
+            &host_id,
+            callback_uri,
+            Registration::New { app_name: APP_NAME },
+        )?;
+        let (sender, receiver) = oneshot::channel();
+        let state = CallbackState {
+            port,
+            sender: Arc::new(Mutex::new(Some(sender))),
+        };
+        let router = Router::new()
+            .route("/auth/callback", get(callback))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        Ok(Self {
+            attempt: Some(attempt),
+            receiver: Some(receiver),
+            server,
+        })
+    }
+
+    /// Show as a Continue with ChatGPT action in the trusted login UI. Do not
+    /// log or send this URL to an untrusted agent or research transcript.
+    pub fn authorization_url(&self) -> &Url {
+        self.attempt
+            .as_ref()
+            .expect("pending attempt")
+            .authorization_url()
+    }
+
+    async fn receive_code(&mut self) -> Result<CodeExchange, LoginError> {
+        let receiver = self.receiver.take().ok_or(LoginError::Listener)?;
+        let callback = timeout(CALLBACK_WAIT, receiver)
+            .await
+            .map_err(|_| LoginError::Timeout)?
+            .map_err(|_| LoginError::Listener)?;
+        self.attempt
+            .take()
+            .ok_or(LoginError::Listener)?
+            .finish(&callback)
+            .map_err(LoginError::Authorization)
+    }
+
+    pub async fn complete(
+        mut self,
+        authority: &OpenAiAuthority,
+        store: &ProtectedStore,
+    ) -> Result<LoginOutcome, LoginError> {
+        let exchange = self.receive_code().await?;
+        if exchange.host_id != store.host_id()? {
+            return Err(LoginError::HostChanged);
+        }
+        let session = authority.exchange_code(exchange, None).await?;
+        store.save(&session)?;
+        Ok(LoginOutcome {
+            client_id: session.client_id().to_owned(),
+            subject: session.subject().to_owned(),
+            plan_enabled: session.plan_enabled(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn loopback_callback_preserves_exact_state_and_issued_client() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::open(&temp.path().join("credentials")).unwrap();
+        let mut login = LoginSession::start(&store).await.unwrap();
+        let query: std::collections::HashMap<_, _> = login
+            .authorization_url()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        let callback = format!(
+            "{}?code=fake-code&state={}&client_id=oaiapp-fixture",
+            query["redirect_uri"], query["state"]
+        );
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(callback)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let exchange = login.receive_code().await.unwrap();
+        assert_eq!(exchange.client_id, "oaiapp-fixture");
+        assert_eq!(exchange.host_id, store.host_id().unwrap());
+    }
+}

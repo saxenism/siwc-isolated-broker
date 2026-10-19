@@ -7,6 +7,7 @@ description = "Credential-isolated ChatGPT plan broker primitives"
 publish = false
 
 [dependencies]
+axum = "0.8"
 base64 = "0.22"
 getrandom = "0.3"
 hex = "0.4.3"
@@ -19,7 +20,7 @@ sha2 = "0.10"
 subtle = "2"
 tempfile = "3.27.0"
 thiserror = "2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9.1"
