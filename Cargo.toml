@@ -6,9 +6,19 @@ license = "MIT"
 description = "Credential-isolated ChatGPT plan broker primitives"
 publish = false
 
+[features]
+default = []
+experimental-login = ["dep:clap"]
+
+[[bin]]
+name = "siwc-login"
+path = "src/bin/siwc_login.rs"
+required-features = ["experimental-login"]
+
 [dependencies]
 axum = "0.8"
 base64 = "0.22"
+clap = { version = "4", features = ["derive"], optional = true }
 getrandom = "0.3"
 hex = "0.4.3"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
@@ -20,7 +30,7 @@ sha2 = "0.10"
 subtle = "2"
 tempfile = "3.27.0"
 thiserror = "2"
-tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9.1"
