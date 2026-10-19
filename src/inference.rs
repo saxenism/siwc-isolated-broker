@@ -112,7 +112,7 @@ impl PlanInference {
     }
 
     #[cfg(test)]
-    fn for_loopback_test(endpoint: Url) -> Self {
+    pub(crate) fn for_loopback_test(endpoint: Url) -> Self {
         Self {
             client: Client::builder().no_proxy().build().unwrap(),
             endpoint,
