@@ -1,0 +1,17 @@
+[package]
+name = "siwc-isolated-broker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Credential-isolated ChatGPT plan broker primitives"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+getrandom = "0.3"
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
