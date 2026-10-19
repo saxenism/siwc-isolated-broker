@@ -9,11 +9,17 @@ publish = false
 [features]
 default = []
 experimental-login = ["dep:clap"]
+experimental-serve = ["dep:clap"]
 
 [[bin]]
 name = "siwc-login"
 path = "src/bin/siwc_login.rs"
 required-features = ["experimental-login"]
+
+[[bin]]
+name = "siwc-serve"
+path = "src/bin/siwc_serve.rs"
+required-features = ["experimental-serve"]
 
 [dependencies]
 anyhow = "1"
@@ -23,6 +29,9 @@ clap = { version = "4", features = ["derive"], optional = true }
 ed25519-dalek = "3.0.0"
 getrandom = "0.3"
 hex = "0.4.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 libc = "0.2.191"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -33,7 +42,7 @@ sha2 = "0.10"
 subtle = "2"
 tempfile = "3.27.0"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9.1"

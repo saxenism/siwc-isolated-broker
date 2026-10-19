@@ -168,13 +168,17 @@ pub fn verify_authority(
 
 #[cfg(test)]
 pub(crate) fn signed_fixture() -> (Vec<u8>, VerifyingKey) {
+    signed_fixture_at(1_800_000_000)
+}
+
+#[cfg(test)]
+pub(crate) fn signed_fixture_at(now: i64) -> (Vec<u8>, VerifyingKey) {
     use ed25519_dalek::{Signer, SigningKey};
-    const NOW: i64 = 1_800_000_000;
     let signer = SigningKey::from_bytes(&[7u8; 32]);
     let body = AuthorityBody {
         format_version: 1,
         key_id: key_id(&signer.verifying_key()),
-        issued_at: NOW,
+        issued_at: now,
         approval_id: "approval-1".into(),
         resource_id: "worker-1".into(),
         source_pin: "a".repeat(40),
@@ -184,7 +188,7 @@ pub(crate) fn signed_fixture() -> (Vec<u8>, VerifyingKey) {
             lane_id: "lane-1".into(),
             role: "hunter".into(),
             model: "gpt-6-sol".into(),
-            expires_at: NOW + 90,
+            expires_at: now + 90,
             max_requests: 2,
             max_request_bytes: 1024,
             max_total_input_bytes: 4096,

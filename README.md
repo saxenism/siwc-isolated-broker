@@ -4,27 +4,30 @@ A small Rust project for using [Sign in with ChatGPT plan sharing](https://devel
 
 ## Status
 
-**Prototype only; do not use with real credentials yet.** This milestone builds and tests first-time and returning authorization, a bound loopback callback listener, fixed-endpoint code exchange and refresh, issuer JWKS retrieval, signed ID-token validation, plan permission and account binding, and a narrow Responses request policy. A Unix-only, owner-only store atomically saves validated token records, rejects account switches on replacement, and holds an exclusive broker process lock. Parsed token strings are cleared on failed validation. Refresh rotation uses an in-process gate and a durable uncertain-outcome marker. The fixed Responses transport verifies the request and buffers a bounded, completed SSE response while suppressing upstream error bodies and exact credential reflection. A signed-grant verifier checks exact campaign, lane, AoE session, expiry, source pin, and quotas. Its broker-owned SQLite ledger burns a signed authority once, reserves each request and its input bytes before dispatch, and preserves revocation and counters across restart. The trusted broker core now connects that ledger to protected-session inference; a fake completed turn and revoked-request denial pass across restart. All transports have been exercised only against fake local services. A feature-gated `siwc-login` command lists nonsecret saved-account metadata and prints a one-time browser URL, but has not been run with a real account. There is no serving socket or proven OS boundary around the core yet.
+**Prototype only; do not use with real credentials yet.** The Rust core implements first-time and returning browser authorization, signed account validation, a protected token store, guarded refresh, one-use signed lane grants, durable quota/revocation, and a fixed Responses request route. Two Unix sockets expose separate controller grant/revocation and agent inference surfaces. They check peer UIDs, directory ownership, group permissions, and the agent bearer capability. A fake completed inference turn, route separation, and revocation pass through the sockets. An experimental `siwc-serve` binary starts this service, but it has not been run under three actual OS identities or with a live account. All OAuth and model transports have used only synthetic local services.
 
 The private campaign controller, its approval state, target source, research traces, and reports are not part of this repository.
 
 ## Intended trust boundary
 
 ```text
-untrusted agent container ── scoped lane capability ──> broker Unix socket
-                                                   trusted broker process
-                                                   ├─ protected SIWC credentials
-                                                   ├─ rotating refresh owner
-                                                   └─ HTTPS to POST /v1/responses
+untrusted agent UID ── scoped capability ──> agent Unix socket
+trusted controller UID ── signed lane authority ──> admin Unix socket
+                                      broker UID (distinct from both)
+                                      ├─ private 0700 SIWC credential store
+                                      ├─ durable grant ledger and refresh owner
+                                      └─ HTTPS to POST /v1/responses
 ```
 
-The broker must verify a short-lived lane grant, exact model and route, lease and request quota before dispatch. It must never return OAuth tokens, upstream headers, or credential-bearing error bodies to the agent. Host egress policy must prevent an agent from bypassing the socket. A local HTTP proxy or a hidden prompt is not this boundary.
+The broker verifies a short-lived lane grant, exact model and route, lease and request quota before dispatch. It does not return OAuth tokens or upstream headers to the agent. Upstream errors and exact credential reflections are quarantined; transformed reflections still need adversarial testing. Host egress policy must prevent an agent from bypassing the socket. A local HTTP proxy or a hidden prompt is not this boundary.
+
+`siwc-login` and `siwc-serve` are feature-gated experimental binaries. `siwc-serve` requires a selected client ID and subject, the controller Ed25519 public key, distinct non-root broker/controller/agent UIDs, and two **different** broker-owned 0750 exchange directories grouped to their respective peers. Each socket is 0660 and also checks the connecting UID. The credential directory remains separate and 0700. The broker account must be able to set each socket's intended group. The library unit tests simulate these identities within one UID; they do not prove the deployment boundary.
 
 ## Next gates before a live login
 
-1. Deploy and test the feature-gated login command under a dedicated broker OS identity, with a human-operated browser and protected credential directory outside all agent mounts. Add a saved-account picker and validate trusted issuer JWKS rotation. Returning authorization omits `id_token_hint`, so the user sees the browser account selector; the signed replacement identity is checked against the selected local record. The bound loopback listener, fixed token/JWKS transport, and signed ID-token verifier have only fake-authority coverage.
+1. Deploy and test the feature-gated login command under a dedicated broker OS identity, with a human-operated browser and protected credential directory outside all agent mounts. Validate trusted issuer JWKS rotation. Returning authorization omits `id_token_hint`, so the user sees the browser account selector; the signed replacement identity is checked against the selected local record. The bound loopback listener, fixed token/JWKS transport, and signed ID-token verifier have only fake-authority coverage.
 2. Verify refresh and restart behavior against an eligible real account under a dedicated broker OS identity. The owner-only atomic store, single refresh owner, and uncertain-outcome marker are tested with synthetic records.
-3. Serve a Unix socket with peer authentication, check the signed lane and deployment binding, and atomically reserve quota in the broker-owned ledger before every Responses call. Deliver close/revocation events reliably. Permit only `POST /v1/responses` for one approved model and its documented request shape.
+3. Prove the two Unix socket surfaces under separate live OS identities, including denied cross-role access and inaccessible credential paths. Deliver close/revocation events reliably and verify host/container egress policy. The socket and ledger currently pass synthetic unit tests only.
 4. Replace whole-response buffering with a safe incremental streaming design or demonstrate that its latency and bounded memory meet the Codex workload. Test transformed credential reflections and errors without exposing upstream bodies. Keep agent, broker, and target-build process and mount namespaces separate.
 5. Run a harmless authenticated turn, restart/resume, and adversarial shell inspection in the isolated environment. A model catalog is not proof of entitlement; a completed inference turn is.
 

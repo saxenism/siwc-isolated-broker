@@ -14,5 +14,7 @@ pub mod login;
 pub mod oauth;
 pub mod policy;
 #[cfg(unix)]
+pub mod sockets;
+#[cfg(unix)]
 pub mod storage;
 pub mod tokens;

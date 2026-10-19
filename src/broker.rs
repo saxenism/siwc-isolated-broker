@@ -66,7 +66,7 @@ impl BrokerCore {
         )
     }
 
-    fn with_transports(
+    pub(crate) fn with_transports(
         store: ProtectedStore,
         controller_key: VerifyingKey,
         client_id: String,
