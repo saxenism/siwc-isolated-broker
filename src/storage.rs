@@ -111,6 +111,10 @@ fn marker_path(dir: &Path, client_id: &str) -> PathBuf {
 }
 
 impl ProtectedStore {
+    pub(crate) fn directory(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
         if !dir.is_absolute() {
             return Err(StoreError::UnsafePath);

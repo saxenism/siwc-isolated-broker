@@ -6,6 +6,7 @@ pub mod authority;
 pub mod grants;
 pub mod identity;
 pub mod inference;
+pub mod ledger;
 #[cfg(unix)]
 pub mod login;
 pub mod oauth;

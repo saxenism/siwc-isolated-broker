@@ -167,39 +167,41 @@ pub fn verify_authority(
 }
 
 #[cfg(test)]
+pub(crate) fn signed_fixture() -> (Vec<u8>, VerifyingKey) {
+    use ed25519_dalek::{Signer, SigningKey};
+    const NOW: i64 = 1_800_000_000;
+    let signer = SigningKey::from_bytes(&[7u8; 32]);
+    let body = AuthorityBody {
+        format_version: 1,
+        key_id: key_id(&signer.verifying_key()),
+        issued_at: NOW,
+        approval_id: "approval-1".into(),
+        resource_id: "worker-1".into(),
+        source_pin: "a".repeat(40),
+        aoe_session_id: "session-1".into(),
+        grant: ModelGrant {
+            campaign_id: "campaign-1".into(),
+            lane_id: "lane-1".into(),
+            role: "hunter".into(),
+            model: "gpt-6-sol".into(),
+            expires_at: NOW + 90,
+            max_requests: 2,
+            max_request_bytes: 1024,
+            max_total_input_bytes: 4096,
+        },
+    };
+    let signed = SignedAuthority {
+        signature: hex::encode(signer.sign(&signed_message(&body).unwrap()).to_bytes()),
+        body,
+    };
+    (serde_json::to_vec(&signed).unwrap(), signer.verifying_key())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
 
     const NOW: i64 = 1_800_000_000;
-
-    fn signed_fixture() -> (Vec<u8>, VerifyingKey) {
-        let signer = SigningKey::from_bytes(&[7u8; 32]);
-        let body = AuthorityBody {
-            format_version: 1,
-            key_id: key_id(&signer.verifying_key()),
-            issued_at: NOW,
-            approval_id: "approval-1".into(),
-            resource_id: "worker-1".into(),
-            source_pin: "a".repeat(40),
-            aoe_session_id: "session-1".into(),
-            grant: ModelGrant {
-                campaign_id: "campaign-1".into(),
-                lane_id: "lane-1".into(),
-                role: "hunter".into(),
-                model: "gpt-6-sol".into(),
-                expires_at: NOW + 90,
-                max_requests: 2,
-                max_request_bytes: 1024,
-                max_total_input_bytes: 4096,
-            },
-        };
-        let signed = SignedAuthority {
-            signature: hex::encode(signer.sign(&signed_message(&body).unwrap()).to_bytes()),
-            body,
-        };
-        (serde_json::to_vec(&signed).unwrap(), signer.verifying_key())
-    }
 
     #[test]
     fn signed_approval_is_bound_to_exact_lane_and_expiry() {
