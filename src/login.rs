@@ -68,6 +68,7 @@ async fn callback(
 /// the authorization URL contains state and nonce values.
 pub struct LoginSession {
     attempt: Option<AuthorizationAttempt>,
+    expected_subject: Option<String>,
     receiver: Option<oneshot::Receiver<Url>>,
     server: JoinHandle<()>,
 }
@@ -85,7 +86,34 @@ impl Drop for LoginSession {
 }
 
 impl LoginSession {
+    /// Register another ChatGPT account or workspace with this broker host.
     pub async fn start(store: &ProtectedStore) -> Result<Self, LoginError> {
+        Self::start_inner(store, Registration::New { app_name: APP_NAME }, None).await
+    }
+
+    /// Reauthorize one previously validated account. The account selector is
+    /// shown in the browser; the signed replacement identity must still match
+    /// the selected record before any credential is replaced.
+    pub async fn start_returning(
+        store: &ProtectedStore,
+        client_id: &str,
+        subject: &str,
+    ) -> Result<Self, LoginError> {
+        let host_id = store.host_id()?;
+        let _previous = store.load(client_id, &host_id, subject)?;
+        Self::start_inner(
+            store,
+            Registration::Existing { client_id },
+            Some(subject.to_owned()),
+        )
+        .await
+    }
+
+    async fn start_inner(
+        store: &ProtectedStore,
+        registration: Registration<'_>,
+        expected_subject: Option<String>,
+    ) -> Result<Self, LoginError> {
         let host_id = store.host_id()?;
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -96,11 +124,7 @@ impl LoginSession {
             .port();
         let callback_uri = Url::parse(&format!("http://127.0.0.1:{port}/auth/callback"))
             .expect("bound loopback callback URL");
-        let attempt = AuthorizationAttempt::begin(
-            &host_id,
-            callback_uri,
-            Registration::New { app_name: APP_NAME },
-        )?;
+        let attempt = AuthorizationAttempt::begin(&host_id, callback_uri, registration)?;
         let (sender, receiver) = oneshot::channel();
         let state = CallbackState {
             port,
@@ -114,6 +138,7 @@ impl LoginSession {
         });
         Ok(Self {
             attempt: Some(attempt),
+            expected_subject,
             receiver: Some(receiver),
             server,
         })
@@ -150,7 +175,9 @@ impl LoginSession {
         if exchange.host_id != store.host_id()? {
             return Err(LoginError::HostChanged);
         }
-        let session = authority.exchange_code(exchange, None).await?;
+        let session = authority
+            .exchange_code(exchange, self.expected_subject.as_deref())
+            .await?;
         store.save(&session)?;
         Ok(LoginOutcome {
             client_id: session.client_id().to_owned(),
@@ -190,5 +217,16 @@ mod tests {
         let exchange = login.receive_code().await.unwrap();
         assert_eq!(exchange.client_id, "oaiapp-fixture");
         assert_eq!(exchange.host_id, store.host_id().unwrap());
+    }
+
+    #[tokio::test]
+    async fn returning_account_requires_saved_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::open(&temp.path().join("credentials")).unwrap();
+        assert!(
+            LoginSession::start_returning(&store, "oaiapp-missing", "person-1")
+                .await
+                .is_err()
+        );
     }
 }

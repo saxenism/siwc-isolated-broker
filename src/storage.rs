@@ -268,7 +268,12 @@ impl ProtectedStore {
         }
         let path = record_path(&self.dir, &session.client_id);
         match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() && owner_only(&metadata, 0o600) => {}
+            Ok(metadata) if metadata.file_type().is_file() && owner_only(&metadata, 0o600) => {
+                // A returning sign-in or refresh may rotate credentials for
+                // this binding, but cannot silently switch accounts.
+                let _previous =
+                    self.load(&session.client_id, &session.host_id, &session.subject)?;
+            }
             Ok(_) => return Err(StoreError::UnsafePath),
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(StoreError::Io(error)),
@@ -404,6 +409,18 @@ mod tests {
             .load(&session.client_id, &session.host_id, &session.subject)
             .unwrap();
         assert_eq!(loaded.access_token_for_upstream(), Some("synthetic-access"));
+        let mut wrong_account = fixture();
+        wrong_account.subject = "person-2".into();
+        assert!(matches!(
+            store.save(&wrong_account),
+            Err(StoreError::InvalidRecord)
+        ));
+        let mut wrong_host = fixture();
+        wrong_host.host_id = "urn:uuid:aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa".into();
+        assert!(matches!(
+            store.save(&wrong_host),
+            Err(StoreError::InvalidRecord)
+        ));
         assert!(matches!(
             store.load(&session.client_id, "other-host", &session.subject),
             Err(StoreError::InvalidRecord)
