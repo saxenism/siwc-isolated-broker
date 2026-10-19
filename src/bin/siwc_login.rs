@@ -21,6 +21,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Account {
+    /// List saved account identities and plan permission, without printing tokens.
+    List,
     /// Register a new ChatGPT account/workspace for this broker host.
     New,
     /// Reauthorize one saved client/subject binding; browser account picker appears.
@@ -37,6 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let store = ProtectedStore::open(&args.store_dir)?;
     let login = match args.account {
+        Account::List => {
+            for account in store.list_accounts()? {
+                println!(
+                    "{}  {}  plan={}  access_expires_at={}",
+                    account.client_id, account.subject, account.plan_enabled, account.expires_at
+                );
+            }
+            return Ok(());
+        }
         Account::New => LoginSession::start(&store).await?,
         Account::Returning { client_id, subject } => {
             LoginSession::start_returning(&store, &client_id, &subject).await?

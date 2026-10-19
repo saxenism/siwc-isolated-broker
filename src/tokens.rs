@@ -9,7 +9,7 @@ use std::{
 use jsonwebtoken::jwk::JwkSet;
 use serde::Deserialize;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     identity::{verify_id_token, verify_refresh_id_token},
@@ -40,6 +40,14 @@ struct RawTokenResponse {
     expires_in: u64,
     scope: String,
     earliest_refresh_at: u64,
+}
+
+impl Drop for RawTokenResponse {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        self.refresh_token.zeroize();
+        self.id_token.zeroize();
+    }
 }
 
 /// Lives only in the trusted broker identity. Deliberately lacks Debug,
@@ -111,7 +119,7 @@ pub fn accept_initial_token_response(
     if body.len() > MAX_TOKEN_RESPONSE || exchange.host_id.is_empty() {
         return Err(TokenError::InvalidResponse);
     }
-    let raw: RawTokenResponse =
+    let mut raw: RawTokenResponse =
         serde_json::from_slice(body).map_err(|_| TokenError::InvalidResponse)?;
     if raw.access_token.is_empty()
         || raw.refresh_token.is_empty()
@@ -156,9 +164,9 @@ pub fn accept_initial_token_response(
         scopes,
         expires_at,
         earliest_refresh_at: raw.earliest_refresh_at,
-        access_token: Zeroizing::new(raw.access_token),
-        refresh_token: Zeroizing::new(raw.refresh_token),
-        id_token: Zeroizing::new(raw.id_token),
+        access_token: Zeroizing::new(std::mem::take(&mut raw.access_token)),
+        refresh_token: Zeroizing::new(std::mem::take(&mut raw.refresh_token)),
+        id_token: Zeroizing::new(std::mem::take(&mut raw.id_token)),
     })
 }
 
@@ -173,7 +181,7 @@ pub fn accept_refresh_token_response(
     if body.len() > MAX_TOKEN_RESPONSE {
         return Err(TokenError::InvalidResponse);
     }
-    let raw: RawTokenResponse =
+    let mut raw: RawTokenResponse =
         serde_json::from_slice(body).map_err(|_| TokenError::InvalidResponse)?;
     if raw.access_token.is_empty()
         || raw.refresh_token.is_empty()
@@ -213,9 +221,9 @@ pub fn accept_refresh_token_response(
         scopes,
         expires_at,
         earliest_refresh_at: raw.earliest_refresh_at,
-        access_token: Zeroizing::new(raw.access_token),
-        refresh_token: Zeroizing::new(raw.refresh_token),
-        id_token: Zeroizing::new(raw.id_token),
+        access_token: Zeroizing::new(std::mem::take(&mut raw.access_token)),
+        refresh_token: Zeroizing::new(std::mem::take(&mut raw.refresh_token)),
+        id_token: Zeroizing::new(std::mem::take(&mut raw.id_token)),
     })
 }
 

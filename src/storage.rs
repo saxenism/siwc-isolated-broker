@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 use thiserror::Error;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::tokens::ValidatedSession;
 
@@ -63,6 +63,30 @@ struct RecordOwned {
     access_token: String,
     refresh_token: String,
     id_token: String,
+}
+
+#[derive(Deserialize)]
+struct RecordIndex {
+    client_id: String,
+    subject: String,
+    host_id: String,
+}
+
+/// Nonsecret account metadata for a local human-operated account picker.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SavedAccount {
+    pub client_id: String,
+    pub subject: String,
+    pub plan_enabled: bool,
+    pub expires_at: u64,
+}
+
+impl Drop for RecordOwned {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        self.refresh_token.zeroize();
+        self.id_token.zeroize();
+    }
 }
 
 pub struct ProtectedStore {
@@ -335,7 +359,7 @@ impl ProtectedStore {
         if bytes.len() > MAX_RECORD {
             return Err(StoreError::InvalidRecord);
         }
-        let record: RecordOwned =
+        let mut record: RecordOwned =
             serde_json::from_slice(&bytes).map_err(|_| StoreError::InvalidRecord)?;
         if record.version != 1
             || record.client_id != expected_client_id
@@ -353,16 +377,65 @@ impl ProtectedStore {
             return Err(StoreError::InvalidRecord);
         }
         Ok(ValidatedSession {
-            client_id: record.client_id,
-            subject: record.subject,
-            host_id: record.host_id,
-            scopes: record.scopes,
+            client_id: std::mem::take(&mut record.client_id),
+            subject: std::mem::take(&mut record.subject),
+            host_id: std::mem::take(&mut record.host_id),
+            scopes: std::mem::take(&mut record.scopes),
             expires_at: record.expires_at,
             earliest_refresh_at: record.earliest_refresh_at,
-            access_token: Zeroizing::new(record.access_token),
-            refresh_token: Zeroizing::new(record.refresh_token),
-            id_token: Zeroizing::new(record.id_token),
+            access_token: Zeroizing::new(std::mem::take(&mut record.access_token)),
+            refresh_token: Zeroizing::new(std::mem::take(&mut record.refresh_token)),
+            id_token: Zeroizing::new(std::mem::take(&mut record.id_token)),
         })
+    }
+
+    pub fn list_accounts(&self) -> Result<Vec<SavedAccount>, StoreError> {
+        let host_id = self.host_id()?;
+        let mut accounts = Vec::new();
+        for entry in fs::read_dir(&self.dir).map_err(StoreError::Io)? {
+            let entry = entry.map_err(StoreError::Io)?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !(name.starts_with("account-") && name.ends_with(".json")) {
+                continue;
+            }
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(entry.path())
+                .map_err(StoreError::Io)?;
+            let metadata = file.metadata().map_err(StoreError::Io)?;
+            if !metadata.file_type().is_file()
+                || !owner_only(&metadata, 0o600)
+                || metadata.len() > MAX_RECORD as u64
+            {
+                return Err(StoreError::UnsafePath);
+            }
+            let mut bytes = Zeroizing::new(Vec::new());
+            file.take((MAX_RECORD + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(StoreError::Io)?;
+            if bytes.len() > MAX_RECORD {
+                return Err(StoreError::InvalidRecord);
+            }
+            let index: RecordIndex =
+                serde_json::from_slice(&bytes).map_err(|_| StoreError::InvalidRecord)?;
+            if record_path(&self.dir, &index.client_id) != entry.path() || index.host_id != host_id
+            {
+                return Err(StoreError::InvalidRecord);
+            }
+            let session = self.load(&index.client_id, &host_id, &index.subject)?;
+            accounts.push(SavedAccount {
+                client_id: session.client_id().to_owned(),
+                subject: session.subject().to_owned(),
+                plan_enabled: session.plan_enabled(),
+                expires_at: session.expires_at(),
+            });
+        }
+        accounts.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+        Ok(accounts)
     }
 }
 
@@ -445,6 +518,24 @@ mod tests {
         drop(store);
         let reopened = ProtectedStore::open(&dir).unwrap();
         assert_eq!(host_id, reopened.host_id().unwrap());
+    }
+
+    #[test]
+    fn account_picker_reads_only_current_host_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::open(&temp.path().join("private")).unwrap();
+        let mut session = fixture();
+        session.host_id = store.host_id().unwrap();
+        store.save(&session).unwrap();
+        assert_eq!(
+            store.list_accounts().unwrap(),
+            vec![SavedAccount {
+                client_id: "oaiapp-fixture".into(),
+                subject: "person-1".into(),
+                plan_enabled: true,
+                expires_at: u64::MAX,
+            }]
+        );
     }
 
     #[test]
