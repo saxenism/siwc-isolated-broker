@@ -1,0 +1,12 @@
+name: Linux UID boundary
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-sockets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: sh scripts/probe_linux_uid_boundary.sh

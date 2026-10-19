@@ -23,6 +23,8 @@ The broker verifies a short-lived lane grant, exact model and route, lease and r
 
 `siwc-login` and `siwc-serve` are feature-gated experimental binaries. `siwc-serve` requires a selected client ID and subject, the controller Ed25519 public key, distinct non-root broker/controller/agent UIDs, and two **different** broker-owned 0750 exchange directories grouped to their respective peers. Each socket is 0660 and also checks the connecting UID. The credential directory remains separate and 0700. The broker account must be able to set each socket's intended group. The library unit tests simulate these identities within one UID; they do not prove the deployment boundary.
 
+`sh scripts/probe_linux_uid_boundary.sh` runs an additional disposable Linux fixture with three real UIDs and a networkless test phase. It verifies cross-role socket denial, broker credential-directory denial, and peer UID enforcement even when a test root process can traverse both exchange directories. It uses synthetic tokens and cleans its build cache by default. Passing the fixture does not establish cloud namespace isolation or account eligibility.
+
 ## Next gates before a live login
 
 1. Deploy and test the feature-gated login command under a dedicated broker OS identity, with a human-operated browser and protected credential directory outside all agent mounts. Validate trusted issuer JWKS rotation. Returning authorization omits `id_token_hint`, so the user sees the browser account selector; the signed replacement identity is checked against the selected local record. The bound loopback listener, fixed token/JWKS transport, and signed ID-token verifier have only fake-authority coverage.
