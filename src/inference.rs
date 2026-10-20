@@ -19,6 +19,7 @@ const RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 const MAX_EVENTS: usize = 100_000;
+const MAX_EVENT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum InferenceError {
@@ -110,7 +111,10 @@ impl PlanInference {
             }
             body.extend_from_slice(&chunk);
         }
-        if reflects_any_credential(&body, session) || !validated_complete_sse(&body) {
+        if !validated_complete_sse(&body)
+            || reflects_any_credential(&body, session)
+            || reflects_decoded_sse_credential(&body, session)
+        {
             return Err(InferenceError::InvalidResponse);
         }
         Ok(body)
@@ -169,6 +173,40 @@ fn reflects_any_credential(body: &[u8], session: &ValidatedSession) -> bool {
     false
 }
 
+/// SSE is JSON-encoded. A credential written with JSON Unicode escapes is
+/// absent from the raw wire bytes but reappears after the client decodes it.
+/// Scan every decoded string before releasing an otherwise valid response.
+fn reflects_decoded_sse_credential(body: &[u8], session: &ValidatedSession) -> bool {
+    fn visit(value: &Value, session: &ValidatedSession) -> bool {
+        match value {
+            Value::String(text) => reflects_any_credential(text.as_bytes(), session),
+            Value::Array(values) => values.iter().any(|value| visit(value, session)),
+            Value::Object(values) => values.iter().any(|(key, value)| {
+                reflects_any_credential(key.as_bytes(), session) || visit(value, session)
+            }),
+            _ => false,
+        }
+    }
+
+    let Ok(text) = std::str::from_utf8(body) else {
+        return true;
+    };
+    let normalized = text.replace("\r\n", "\n");
+    normalized.split("\n\n").any(|frame| {
+        let data: Vec<&str> = frame
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+            .collect();
+        if data.is_empty() {
+            return false;
+        }
+        match serde_json::from_str::<Value>(&data.join("\n")) {
+            Ok(value) => visit(&value, session),
+            Err(_) => true,
+        }
+    })
+}
+
 /// Validate one bounded Responses SSE body before a trusted caller releases it
 /// to a Codex client. It does not inspect upstream error bodies or credentials.
 pub fn validated_complete_sse(bytes: &[u8]) -> bool {
@@ -189,6 +227,9 @@ pub fn validated_complete_sse(bytes: &[u8]) -> bool {
         .split("\n\n")
         .filter(|frame| !frame.trim().is_empty())
     {
+        if frame.len() > MAX_EVENT_BYTES {
+            return false;
+        }
         let mut event = None;
         let mut data = Vec::new();
         for line in frame.lines() {
@@ -354,6 +395,14 @@ mod tests {
                 .unwrap_err(),
             InferenceError::InvalidResponse
         );
+        let transport = transport_with_body("event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"},\"leak\":\"synthetic\\u002daccess\\u002dtoken\\u002d123\"}\n\n", AxumStatus::OK).await;
+        assert_eq!(
+            transport
+                .complete(&session(), REQUEST, "test-model")
+                .await
+                .unwrap_err(),
+            InferenceError::InvalidResponse
+        );
         let transport = transport_with_body("event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"},\"leak\":\"synthetic-access-token-123\"}\n\n", AxumStatus::OK).await;
         assert_eq!(
             transport
@@ -400,5 +449,11 @@ mod tests {
         assert!(!validated_complete_sse(
             b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
         ));
+        let oversized = format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"padding\":\"{}\"}}\n\n{}",
+            "x".repeat(MAX_EVENT_BYTES),
+            &COMPLETE[COMPLETE.find("event: response.completed").unwrap()..]
+        );
+        assert!(!validated_complete_sse(oversized.as_bytes()));
     }
 }
