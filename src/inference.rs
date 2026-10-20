@@ -4,9 +4,14 @@
 
 use std::time::Duration;
 
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use reqwest::{Client, StatusCode, Url, redirect::Policy};
 use serde_json::Value;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::{policy::valid_plan_request, tokens::ValidatedSession};
 
@@ -121,17 +126,44 @@ impl PlanInference {
 }
 
 fn reflects_any_credential(body: &[u8], session: &ValidatedSession) -> bool {
+    fn contains(body: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && body.windows(needle.len()).any(|window| window == needle)
+    }
+
     for credential in [
         session.access_token.as_bytes(),
         session.refresh_token.as_bytes(),
         session.id_token.as_bytes(),
     ] {
-        if credential.len() >= 8
-            && body
-                .windows(credential.len())
-                .any(|window| window == credential)
-        {
+        if credential.len() < 8 {
+            continue;
+        }
+        if contains(body, credential) {
             return true;
+        }
+        if credential.len() >= 24 {
+            // Opaque suffix and middle slices catch common masked reflections
+            // without relying on shared JWT/header prefixes. This is defense
+            // in depth, not a proof against arbitrary transformations.
+            if contains(body, &credential[credential.len() - 12..])
+                || contains(
+                    body,
+                    &credential[credential.len() / 2 - 6..credential.len() / 2 + 6],
+                )
+            {
+                return true;
+            }
+        }
+        if credential.len() >= 16 {
+            let standard = Zeroizing::new(STANDARD.encode(credential));
+            let url_safe = Zeroizing::new(URL_SAFE_NO_PAD.encode(credential));
+            let hexadecimal = Zeroizing::new(hex::encode(credential));
+            if contains(body, standard.as_bytes())
+                || contains(body, url_safe.as_bytes())
+                || contains(body, hexadecimal.as_bytes())
+            {
+                return true;
+            }
         }
     }
     false
@@ -324,6 +356,24 @@ mod tests {
                 .unwrap_err(),
             InferenceError::InvalidResponse
         );
+    }
+
+    #[test]
+    fn masked_and_encoded_credential_reflections_are_quarantined() {
+        let session = session();
+        let suffix = &session.access_token[session.access_token.len() - 12..];
+        assert!(reflects_any_credential(
+            format!("token=***{suffix}").as_bytes(),
+            &session
+        ));
+        let encoded = STANDARD.encode(session.refresh_token.as_bytes());
+        assert!(reflects_any_credential(encoded.as_bytes(), &session));
+        let hexadecimal = hex::encode(session.id_token.as_bytes());
+        assert!(reflects_any_credential(hexadecimal.as_bytes(), &session));
+        assert!(!reflects_any_credential(
+            b"ordinary completed response",
+            &session
+        ));
     }
 
     #[test]

@@ -19,7 +19,7 @@ trusted controller UID ── signed lane authority ──> admin Unix socket
                                       └─ HTTPS to POST /v1/responses
 ```
 
-The broker verifies a short-lived lane grant, exact model and route, lease and request quota before dispatch. It does not return OAuth tokens or upstream headers to the agent. Upstream errors and exact credential reflections are quarantined; transformed reflections still need adversarial testing. Host egress policy must prevent an agent from bypassing the socket. A local HTTP proxy or a hidden prompt is not this boundary.
+The broker verifies a short-lived lane grant, exact model and route, lease and request quota before dispatch. It does not return OAuth tokens or upstream headers to the agent. Upstream errors are quarantined; successful responses are rejected if they contain a full credential, a 12-byte opaque middle or suffix fragment, or a full base64/hex encoding. Arbitrary transformations and short masked fragments remain possible and need adversarial testing. Host egress policy must prevent an agent from bypassing the socket. A local HTTP proxy or a hidden prompt is not this boundary.
 
 `siwc-login` and `siwc-serve` are feature-gated experimental binaries. `siwc-serve` requires a selected client ID and subject, the controller Ed25519 public key, distinct non-root broker/controller/agent UIDs, and two **different** broker-owned 0750 exchange directories grouped to their respective peers. Each socket is 0660 and also checks the connecting UID. The credential directory remains separate and 0700. The broker account must be able to set each socket's intended group. The library unit tests simulate these identities within one UID; they do not prove the deployment boundary.
 
