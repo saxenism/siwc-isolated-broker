@@ -176,6 +176,12 @@ pub fn validated_complete_sse(bytes: &[u8]) -> bool {
         return false;
     };
     let normalized = text.replace("\r\n", "\n");
+    // An SSE event is dispatched only after its terminating empty line. A
+    // response.completed JSON object at EOF without that delimiter may be a
+    // truncated network response rather than a completed event.
+    if !normalized.ends_with("\n\n") {
+        return false;
+    }
     let mut created = false;
     let mut completed = false;
     let mut count = 0;
@@ -379,6 +385,12 @@ mod tests {
     #[test]
     fn completion_parser_rejects_late_failure_and_truncated_stream() {
         assert!(validated_complete_sse(COMPLETE.as_bytes()));
+        assert!(!validated_complete_sse(
+            COMPLETE.trim_end_matches('\n').as_bytes()
+        ));
+        assert!(!validated_complete_sse(
+            COMPLETE.strip_suffix('\n').unwrap().as_bytes()
+        ));
         assert!(!validated_complete_sse(
             b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
         ));
