@@ -2,7 +2,7 @@
 //! intentionally feature gated while live eligibility and isolation remain
 //! unverified. It never imports Codex CLI authentication files.
 
-use std::{io::Write, path::PathBuf};
+use std::{io::Write, num::NonZeroU16, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use siwc_isolated_broker::{
@@ -24,13 +24,20 @@ enum Account {
     /// List saved account identities and plan permission, without printing tokens.
     List,
     /// Register a new ChatGPT account/workspace for this broker host.
-    New,
+    New {
+        /// Fixed loopback port for an SSH local forward to this broker host.
+        #[arg(long)]
+        callback_port: Option<NonZeroU16>,
+    },
     /// Reauthorize one saved client/subject binding; browser account picker appears.
     Returning {
         #[arg(long)]
         client_id: String,
         #[arg(long)]
         subject: String,
+        /// Fixed loopback port for an SSH local forward to this broker host.
+        #[arg(long)]
+        callback_port: Option<NonZeroU16>,
     },
     /// Import a disposable 0600 transfer file into this VM's broker store.
     ImportVm {
@@ -81,10 +88,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Transfer file: {}", path.display());
             return Ok(());
         }
-        Account::New => LoginSession::start(&store).await?,
-        Account::Returning { client_id, subject } => {
-            LoginSession::start_returning(&store, &client_id, &subject).await?
-        }
+        Account::New { callback_port } => match callback_port {
+            Some(port) => LoginSession::start_on_port(&store, port).await?,
+            None => LoginSession::start(&store).await?,
+        },
+        Account::Returning {
+            client_id,
+            subject,
+            callback_port,
+        } => match callback_port {
+            Some(port) => {
+                LoginSession::start_returning_on_port(&store, &client_id, &subject, port).await?
+            }
+            None => LoginSession::start_returning(&store, &client_id, &subject).await?,
+        },
     };
     println!("Continue with ChatGPT: {}", login.authorization_url());
     std::io::stdout().flush()?;

@@ -2,6 +2,7 @@
 //! identity. The listener binds only 127.0.0.1 and holds one pending attempt.
 
 use std::{
+    num::NonZeroU16,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -88,7 +89,22 @@ impl Drop for LoginSession {
 impl LoginSession {
     /// Register another ChatGPT account or workspace with this broker host.
     pub async fn start(store: &ProtectedStore) -> Result<Self, LoginError> {
-        Self::start_inner(store, Registration::New { app_name: APP_NAME }, None).await
+        Self::start_inner(store, Registration::New { app_name: APP_NAME }, None, None).await
+    }
+
+    /// Bind a known loopback port so a user can forward only that port over
+    /// SSH to a trusted VM. The credential exchange still runs on the VM.
+    pub async fn start_on_port(
+        store: &ProtectedStore,
+        port: NonZeroU16,
+    ) -> Result<Self, LoginError> {
+        Self::start_inner(
+            store,
+            Registration::New { app_name: APP_NAME },
+            None,
+            Some(port),
+        )
+        .await
     }
 
     /// Reauthorize one previously validated account. The account selector is
@@ -105,6 +121,25 @@ impl LoginSession {
             store,
             Registration::Existing { client_id },
             Some(subject.to_owned()),
+            None,
+        )
+        .await
+    }
+
+    /// Reauthorize a saved identity through a pre-established SSH tunnel.
+    pub async fn start_returning_on_port(
+        store: &ProtectedStore,
+        client_id: &str,
+        subject: &str,
+        port: NonZeroU16,
+    ) -> Result<Self, LoginError> {
+        let host_id = store.host_id()?;
+        let _previous = store.load(client_id, &host_id, subject)?;
+        Self::start_inner(
+            store,
+            Registration::Existing { client_id },
+            Some(subject.to_owned()),
+            Some(port),
         )
         .await
     }
@@ -113,9 +148,11 @@ impl LoginSession {
         store: &ProtectedStore,
         registration: Registration<'_>,
         expected_subject: Option<String>,
+        callback_port: Option<NonZeroU16>,
     ) -> Result<Self, LoginError> {
         let host_id = store.host_id()?;
-        let listener = TcpListener::bind("127.0.0.1:0")
+        let listen = format!("127.0.0.1:{}", callback_port.map_or(0, NonZeroU16::get));
+        let listener = TcpListener::bind(listen)
             .await
             .map_err(|_| LoginError::Listener)?;
         let port = listener
@@ -190,6 +227,28 @@ impl LoginSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fixed_callback_port_is_loopback_only_and_exclusive() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::open(&temp.path().join("credentials")).unwrap();
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = NonZeroU16::new(reserved.local_addr().unwrap().port()).unwrap();
+        drop(reserved);
+        let login = LoginSession::start_on_port(&store, port).await.unwrap();
+        let callback = login
+            .authorization_url()
+            .query_pairs()
+            .find(|(key, _)| key == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned();
+        assert_eq!(callback, format!("http://127.0.0.1:{port}/auth/callback"));
+        assert!(matches!(
+            LoginSession::start_on_port(&store, port).await,
+            Err(LoginError::Listener)
+        ));
+    }
 
     #[tokio::test]
     async fn loopback_callback_preserves_exact_state_and_issued_client() {
