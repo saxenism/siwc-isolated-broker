@@ -26,7 +26,7 @@ use hyper::{
     header::{self, HeaderMap},
     service::service_fn,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::{Deserialize, Serialize};
 use tokio::{
     net::{UnixListener, UnixStream},
@@ -39,6 +39,9 @@ use crate::{broker::BrokerCore, grants::Deployment};
 
 const MAX_AGENT_BODY: usize = 1024 * 1024;
 const MAX_ADMIN_BODY: usize = 16 * 1024;
+const AGENT_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const DENIED: &[u8] = b"{\"error\":{\"message\":\"model broker rejected request\"}}";
 
 #[derive(Clone, Copy)]
@@ -162,12 +165,16 @@ fn valid_identity(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-async fn collect_body(body: Incoming, limit: usize) -> Result<Bytes, ()> {
-    Limited::new(body, limit)
-        .collect()
-        .await
-        .map(|collected| collected.to_bytes())
-        .map_err(|_| ())
+async fn collect_body(
+    body: Incoming,
+    limit: usize,
+    deadline: Duration,
+) -> Result<Bytes, StatusCode> {
+    match timeout(deadline, Limited::new(body, limit).collect()).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes()),
+        Ok(Err(_)) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+        Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
+    }
 }
 
 async fn agent_request(core: Arc<BrokerCore>, request: Request<Incoming>) -> Response<Full<Bytes>> {
@@ -197,8 +204,9 @@ async fn agent_request(core: Arc<BrokerCore>, request: Request<Incoming>) -> Res
     else {
         return reject(StatusCode::UNAUTHORIZED);
     };
-    let Ok(body) = collect_body(request.into_body(), MAX_AGENT_BODY).await else {
-        return reject(StatusCode::PAYLOAD_TOO_LARGE);
+    let body = match collect_body(request.into_body(), MAX_AGENT_BODY, AGENT_BODY_TIMEOUT).await {
+        Ok(body) => body,
+        Err(status) => return reject(status),
     };
     let Ok(now) = current_time() else {
         return reject(StatusCode::SERVICE_UNAVAILABLE);
@@ -226,8 +234,9 @@ async fn admin_request(core: Arc<BrokerCore>, request: Request<Incoming>) -> Res
     if !matches!(path.as_str(), "/v1/grants" | "/v1/revoke") {
         return reject(StatusCode::FORBIDDEN);
     }
-    let Ok(body) = collect_body(request.into_body(), MAX_ADMIN_BODY).await else {
-        return reject(StatusCode::PAYLOAD_TOO_LARGE);
+    let body = match collect_body(request.into_body(), MAX_ADMIN_BODY, ADMIN_BODY_TIMEOUT).await {
+        Ok(body) => body,
+        Err(status) => return reject(status),
     };
     let Ok(now) = current_time() else {
         return reject(StatusCode::SERVICE_UNAVAILABLE);
@@ -444,11 +453,13 @@ async fn serve_listener(
                 Surface::Agent => Duration::from_secs(650),
                 Surface::Admin => Duration::from_secs(30),
             };
+            let mut http = hyper::server::conn::http1::Builder::new();
+            http.keep_alive(false)
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_TIMEOUT);
             let _ = timeout(
                 duration,
-                hyper::server::conn::http1::Builder::new()
-                    .keep_alive(false)
-                    .serve_connection(TokioIo::new(stream), service),
+                http.serve_connection(TokioIo::new(stream), service),
             )
             .await;
         });
@@ -560,6 +571,17 @@ mod tests {
         String::from_utf8(response).unwrap()
     }
 
+    async fn send_partial(path: &Path, request: &[u8]) -> String {
+        let mut stream = UnixStream::connect(path).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(12), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
     fn body(response: &str) -> &str {
         response.split_once("\r\n\r\n").unwrap().1
     }
@@ -663,6 +685,21 @@ mod tests {
             .await
             .starts_with("HTTP/1.1 401")
         );
+        let agent_partial = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: broker\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n{agent_headers}\r\n{{}}"
+        );
+        let admin_partial = "POST /v1/revoke HTTP/1.1\r\nHost: broker\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}";
+        let incomplete_headers = b"POST /v1/responses HTTP/1.1\r\nHost: broker\r\n";
+        let (agent_timeout, admin_timeout, agent_headers_closed, admin_headers_closed) = tokio::join!(
+            send_partial(&agent_path, agent_partial.as_bytes()),
+            send_partial(&admin_path, admin_partial.as_bytes()),
+            send_partial(&agent_path, incomplete_headers),
+            send_partial(&admin_path, incomplete_headers),
+        );
+        assert!(agent_timeout.starts_with("HTTP/1.1 408"));
+        assert!(admin_timeout.starts_with("HTTP/1.1 408"));
+        assert!(!agent_headers_closed.starts_with("HTTP/1.1 200"));
+        assert!(!admin_headers_closed.starts_with("HTTP/1.1 200"));
         task.abort();
     }
 }

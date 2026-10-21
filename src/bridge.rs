@@ -11,7 +11,7 @@ use hyper::{
     header::{self, HeaderValue},
     service::service_fn,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::{
     net::{TcpListener, UnixStream},
     sync::Semaphore,
@@ -24,6 +24,7 @@ use crate::inference::validated_complete_sse;
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const BROKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DENIED: &[u8] = b"{\"error\":{\"message\":\"lane model request rejected\"}}";
 
@@ -187,11 +188,13 @@ impl AgentBridge {
                     let bridge = bridge.clone();
                     async move { Ok::<_, Infallible>(bridge.handle(request).await) }
                 });
+                let mut http = hyper::server::conn::http1::Builder::new();
+                http.keep_alive(false)
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(REQUEST_HEADER_TIMEOUT);
                 let _ = timeout(
                     Duration::from_secs(660),
-                    hyper::server::conn::http1::Builder::new()
-                        .keep_alive(false)
-                        .serve_connection(TokioIo::new(stream), service),
+                    http.serve_connection(TokioIo::new(stream), service),
                 )
                 .await;
             });
@@ -286,7 +289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_request_body_releases_the_bridge_connection() {
+    async fn stalled_headers_and_body_release_bridge_connections() {
         let temp = tempfile::tempdir().unwrap();
         let bridge = AgentBridge::new(
             temp.path().join("unused.sock"),
@@ -305,11 +308,22 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut response = Vec::new();
-        timeout(Duration::from_secs(13), client.read_to_end(&mut response))
+        let mut header_client = tokio::net::TcpStream::connect(address).await.unwrap();
+        header_client
+            .write_all(b"POST /v1/responses HTTP/1.1\r\nHost: localhost\r\n")
             .await
-            .unwrap()
             .unwrap();
+        let mut response = Vec::new();
+        let mut header_response = Vec::new();
+        let (body_result, header_result) = tokio::join!(
+            timeout(Duration::from_secs(13), client.read_to_end(&mut response)),
+            timeout(
+                Duration::from_secs(7),
+                header_client.read_to_end(&mut header_response)
+            ),
+        );
+        body_result.unwrap().unwrap();
+        header_result.unwrap().unwrap();
         assert!(response.starts_with(b"HTTP/1.1 408 "), "{response:?}");
         bridge_task.abort();
     }
