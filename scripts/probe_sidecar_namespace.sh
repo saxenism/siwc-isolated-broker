@@ -103,7 +103,7 @@ const fs = require('node:fs');
   assert.equal(denied.status, 403);
   const result = await fetch('http://127.0.0.1:18080/v1/responses', {
     method: 'POST', headers: {'content-type': 'application/json'},
-    body: JSON.stringify({model: 'gpt-6-sol'}),
+    body: JSON.stringify({model: 'gpt-6-sol', store: false, stream: true, input: []}),
   });
   assert.equal(result.status, 200);
   assert.match(await result.text(), /response.completed/);
