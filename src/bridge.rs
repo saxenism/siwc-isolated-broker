@@ -23,6 +23,8 @@ use crate::inference::validated_complete_sse;
 
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
+const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+const BROKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DENIED: &[u8] = b"{\"error\":{\"message\":\"lane model request rejected\"}}";
 
 pub struct AgentBridge {
@@ -83,9 +85,13 @@ impl AgentBridge {
             .await
             .map_err(|_| ())?
             .map_err(|_| ())?;
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-            .await
-            .map_err(|_| ())?;
+        let (mut sender, connection) = timeout(
+            BROKER_HANDSHAKE_TIMEOUT,
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
         tokio::spawn(async move {
             let _ = connection.await;
         });
@@ -143,12 +149,15 @@ impl AgentBridge {
         {
             return reject(StatusCode::FORBIDDEN);
         }
-        let body = match Limited::new(request.into_body(), MAX_REQUEST)
-            .collect()
-            .await
+        let body = match timeout(
+            REQUEST_BODY_TIMEOUT,
+            Limited::new(request.into_body(), MAX_REQUEST).collect(),
+        )
+        .await
         {
-            Ok(collected) => collected.to_bytes(),
-            Err(_) => return reject(StatusCode::PAYLOAD_TOO_LARGE),
+            Ok(Ok(collected)) => collected.to_bytes(),
+            Ok(Err(_)) => return reject(StatusCode::PAYLOAD_TOO_LARGE),
+            Err(_) => return reject(StatusCode::REQUEST_TIMEOUT),
         };
         match self.call_broker(body).await {
             Ok((StatusCode::OK, bytes)) => reply(StatusCode::OK, "text/event-stream", bytes),
@@ -193,6 +202,7 @@ impl AgentBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
     const COMPLETE: &str = "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
@@ -272,6 +282,35 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        bridge_task.abort();
+    }
+
+    #[tokio::test]
+    async fn stalled_request_body_releases_the_bridge_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let bridge = AgentBridge::new(
+            temp.path().join("unused.sock"),
+            Zeroizing::new(URL_SAFE_NO_PAD.encode([9u8; 32])),
+            "campaign-1".into(),
+            "lane-1".into(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bridge_task = tokio::spawn(bridge.serve(listener));
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(
+                b"POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(13), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 408 "), "{response:?}");
         bridge_task.abort();
     }
 
