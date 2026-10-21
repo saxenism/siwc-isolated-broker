@@ -1,0 +1,9 @@
+.git
+target
+*.log
+.env
+.env.*
+data
+credentials
+transfers
+

@@ -8,6 +8,8 @@ A small Rust project for using [Sign in with ChatGPT plan sharing](https://devel
 
 The private campaign controller, its approval state, target source, research traces, and reports are not part of this repository.
 
+An experimental [multi-stage broker image](deploy/README.md) packages the three feature-gated binaries from pinned bases without credentials. It is a deployment input, not a live-account qualification.
+
 ## Intended trust boundary
 
 ```text
